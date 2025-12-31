@@ -58,3 +58,59 @@ get '/assumptions/:id/impact' do
   impacts = DB.query(sql, [assumption_id]).map { |row| row }
   { assumption_id: assumption_id, impacts: impacts }.to_json
 end
+
+# --- WRITE ENDPOINTS (WIZARD SUPPORT) ---
+
+# 5. Create New Strategy
+post '/strategies' do
+  data = JSON.parse(request.body.read)
+  sql = "INSERT INTO strategy_versions (name, status, created_by) VALUES ($1, 'draft', $2) RETURNING id"
+  # Hardcoding created_by UUID for demo purposes
+  res = DB.query(sql, [data['name'], '00000000-0000-0000-0000-000000000001'])
+  { id: res[0]['id'], status: 'created' }.to_json
+end
+
+# 6. Add Theme to Strategy
+post '/strategies/:id/themes' do
+  data = JSON.parse(request.body.read)
+  sql = "INSERT INTO strategic_themes (strategy_version_id, title, description, owner_id) VALUES ($1, $2, $3, $4) RETURNING id"
+  res = DB.query(sql, [params[:id], data['title'], data['description'], '00000000-0000-0000-0000-000000000001'])
+  { id: res[0]['id'] }.to_json
+end
+
+# 7. Add Objective to Theme
+post '/themes/:id/objectives' do
+  data = JSON.parse(request.body.read)
+  sql = "INSERT INTO objectives (theme_id, title, statement, metric_type, owner_id) VALUES ($1, $2, $3, $4, $5) RETURNING id"
+  res = DB.query(sql, [params[:id], data['title'], data['statement'], 'financial', '00000000-0000-0000-0000-000000000001'])
+  { id: res[0]['id'] }.to_json
+end
+
+# --- DRILL DOWN SUPPORT ---
+
+# 8. Full Deep Dive (Theme -> Objective -> Initiative)
+get '/strategies/:id/deep_dive' do
+  strategy_id = params[:id]
+  
+  # Fetch Themes with Objectives and Initiatives
+  # This is a simplified fetch; in production, use a more optimized query or ORM
+  themes_sql = "SELECT id, title, description, health_status FROM strategic_themes WHERE strategy_version_id = $1"
+  themes = DB.query(themes_sql, [strategy_id]).map { |row| row }
+
+  themes.each do |theme|
+    objs_sql = "SELECT id, title, statement, metric_type FROM objectives WHERE theme_id = $1"
+    theme['objectives'] = DB.query(objs_sql, [theme['id']]).map do |obj|
+      # Fetch Initiatives for this objective
+      init_sql = <<~SQL
+        SELECT i.id, i.title, i.status, i.budget_allocated 
+        FROM initiatives i
+        JOIN initiative_objectives_map iom ON iom.initiative_id = i.id
+        WHERE iom.objective_id = $1
+      SQL
+      obj['initiatives'] = DB.query(init_sql, [obj['id']]).map { |r| r }
+      obj
+    end
+  end
+
+  { strategy_id: strategy_id, tree: themes }.to_json
+end
